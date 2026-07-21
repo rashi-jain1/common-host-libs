@@ -93,6 +93,60 @@ func getAllFcHostPortWWN() (portWWNs []string, err error) {
 	return inits, nil
 }
 
+// getFcHostNumbersForSerial returns SCSI host numbers with active multipathd
+// paths to the device identified by serialNumber (WWID).
+// Returns empty slice (not error) when no paths are found.
+func getFcHostNumbersForSerial(serialNumber string) ([]string, error) {
+        if serialNumber == "" {
+                return nil, nil
+        }
+
+        args := []string{"show", "paths", "format", "%w %d %t %i %o %T %z %s %m"}
+        out, _, err := util.ExecCommandOutput("multipathd", args)
+        if err != nil {
+                return nil, err
+        }
+
+        seen := make(map[string]bool)
+        for _, line := range strings.Split(out, "\n") {
+                if !strings.Contains(line, serialNumber) {
+                        continue
+                }
+                fields := strings.Fields(line)
+                if len(fields) < 4 {
+                        continue
+                }
+                parts := strings.Split(fields[3], ":")
+                if len(parts) >= 1 && parts[0] != "" {
+                        seen[parts[0]] = true
+                }
+        }
+
+        hosts := make([]string, 0, len(seen))
+        for h := range seen {
+                hosts = append(hosts, h)
+        }
+        return hosts, nil
+}
+
+// rescanFcHostsForLun rescans only the specified FC host numbers for lunID.
+// Avoids triggering ALUA re-evaluation on targets from other arrays.
+func rescanFcHostsForLun(hostNumbers []string, lunID string) error {
+        for _, hostNum := range hostNumbers {
+                fcHostScanPath := fmt.Sprintf(fcHostScanPathFormat, hostNum)
+                scanCmd := "- - -"
+                if lunID != "" {
+                        scanCmd = "- - " + lunID
+                }
+                err := util.FileWriteString(fcHostScanPath, scanCmd)
+                if err != nil {
+                        log.Errorf("unable to rescan fc host %s lun %s: %s", hostNum, lunID, err.Error())
+                        return err
+                }
+        }
+        return nil
+}
+
 // fescanFcTarget rescans host ports for new Fibre Channel devices
 func rescanFcTarget(lunID string) (err error) {
 

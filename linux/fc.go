@@ -92,6 +92,73 @@ func GetAllFcHostPortWWN() (portWWNs []string, err error) {
 	return inits, nil
 }
 
+// GetFcHostNumbersForSerial returns the SCSI host numbers that currently have
+// active multipathd paths to the device identified by serialNumber (WWID).
+// Returns an empty slice (not an error) when no paths are found, so the
+// caller can fall back to a full rescan if needed.
+func GetFcHostNumbersForSerial(serialNumber string) ([]string, error) {
+	log.Tracef(">>> GetFcHostNumbersForSerial called for serial %s", serialNumber)
+	defer log.Traceln("<<< GetFcHostNumbersForSerial")
+
+	if serialNumber == "" {
+		return nil, nil
+	}
+
+	lines, err := MultipathdShowPaths(serialNumber)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]bool)
+	for _, line := range lines {
+		// showPathsFormat: %w %d %t %i %o %T %z %s %m
+		// field[3] = hcil in H:C:T:L format
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		parts := strings.Split(fields[3], ":")
+		if len(parts) >= 1 && parts[0] != "" {
+			seen[parts[0]] = true
+		}
+	}
+
+	hosts := make([]string, 0, len(seen))
+	for h := range seen {
+		hosts = append(hosts, h)
+	}
+	log.Debugf("FC host numbers for serial %s: %v", serialNumber, hosts)
+	return hosts, nil
+}
+
+// RescanFcHostsForLun rescans only the specified FC host numbers for the
+// given lunID. This is the scoped replacement for RescanFcTarget() that
+// avoids triggering ALUA re-evaluation on targets belonging to other arrays.
+func RescanFcHostsForLun(hostNumbers []string, lunID string) error {
+	log.Tracef(">>> RescanFcHostsForLun hosts=%v lunID=%s", hostNumbers, lunID)
+	defer log.Traceln("<<< RescanFcHostsForLun")
+
+	for _, hostNum := range hostNumbers {
+		fcHostScanPath := fmt.Sprintf(fcHostScanPathFormat, hostNum)
+		isFCHostScanPathExists, _, _ := util.FileExists(fcHostScanPath)
+		if !isFCHostScanPathExists {
+			log.Tracef("fc host scan path %s does not exist, skipping", fcHostScanPath)
+			continue
+		}
+		scanCmd := "- - -"
+		if lunID != "" {
+			scanCmd = "- - " + lunID
+		}
+		log.Tracef("scanning FC host %s for LUN %s", hostNum, lunID)
+		err := ioutil.WriteFile(fcHostScanPath, []byte(scanCmd), 0644)
+		if err != nil {
+			log.Errorf("unable to rescan fc host %s lun %s: %s", hostNum, lunID, err.Error())
+			return err
+		}
+	}
+	return nil
+}
+
 // RescanFcTarget rescans host ports for new Fibre Channel devices
 //nolint: dupl
 func RescanFcTarget(lunID string) (err error) {

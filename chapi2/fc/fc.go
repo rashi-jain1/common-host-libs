@@ -73,3 +73,18 @@ func (plugin *FcPlugin) RescanFcTarget(lunID string) error {
 	defer log.Trace("<<<<< RescanFcTarget")
 	return rescanFcTarget(lunID)
 }
+
+// RescanFcTargetForSerial rescans only the FC host ports that have existing
+// multipathd paths for the given serialNumber and lunID.
+// Use this instead of RescanFcTarget when serial is available to avoid
+// triggering ALUA re-evaluation on unrelated volumes.
+func (plugin *FcPlugin) RescanFcTargetForSerial(serialNumber, lunID string) error {
+        log.Tracef(">>>>> RescanFcTargetForSerial serial=%s lun=%s", serialNumber, lunID)
+        defer log.Trace("<<<<< RescanFcTargetForSerial")
+        hosts, err := getFcHostNumbersForSerial(serialNumber)
+        if err != nil || len(hosts) == 0 {
+                // Fall back to full rescan for first attach or unknown serial
+                return rescanFcTarget(lunID)
+        }
+        return rescanFcHostsForLun(hosts, lunID)
+}

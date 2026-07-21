@@ -450,8 +450,17 @@ func rescanLoginVolumeForBackend(volObj *model.Volume) error {
 	var err error
 	if strings.EqualFold(volObj.AccessProtocol, "fc") {
 		// FC volume
-
-		err = RescanFcTarget(volObj.LunID)
+		// Use scoped rescan when serial is known to avoid triggering
+		// ALUA re-evaluation on unrelated volumes sharing the same Host LUN ID.
+		fcHosts, hostErr := GetFcHostNumbersForSerial(volObj.SerialNumber)
+		if hostErr != nil || len(fcHosts) == 0 {
+			// Fall back to full rescan for first-attach (no existing paths yet)
+			log.Debugf("falling back to full FC rescan for serial=%s lun=%s (hosts=%v err=%v)",
+				volObj.SerialNumber, volObj.LunID, fcHosts, hostErr)
+			err = RescanFcTarget(volObj.LunID)
+		} else {
+			err = RescanFcHostsForLun(fcHosts, volObj.LunID)
+		}
 		if err != nil {
 			return err
 		}
@@ -909,7 +918,13 @@ func handleRemapForSpecificLunID(serialNumber, lunID, accessProtocol string) (er
 		cleanupUnmappedDevice(oldSerial, lunID)
 		// perform SCSI lun rescan to discover new volume paths
 		if strings.EqualFold(accessProtocol, "fc") {
-			RescanFcTarget(l)
+			// scope rescan to hosts that had paths to the old serial
+			fcHosts, _ := GetFcHostNumbersForSerial(serialNumber)
+			if len(fcHosts) == 0 {
+				RescanFcTarget(l)
+			} else {
+				RescanFcHostsForLun(fcHosts, l)
+			}
 		} else {
 			RescanIscsi(l)
 		}
