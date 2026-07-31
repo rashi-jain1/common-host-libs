@@ -238,11 +238,20 @@ func HandleIscsiDiscovery(volume *model.Volume) (err error) {
 	primaryVolObj.ConnectionMode = volume.ConnectionMode
 	primaryVolObj.SerialNumber = volume.SerialNumber
 
-	err = handleIscsiDiscoveryForBackend(primaryVolObj, true)
-
-	if err != nil {
-		return err
+	// During APP failover the primary array may be offline and its target IQNs
+	// will be absent from the publish context. Only skip primary discovery when there are
+	// genuinely no targets — any other failure means the primary is faulty
+	// and we should surface the error.
+	// Note: targetNames:"" parses as []string{""} so we must filter empty strings.
+	if len(filterEmptyTargets(primaryVolObj.TargetNames())) == 0 {
+		log.Warnf("primary backend has no target IQNs, skipping primary iSCSI discovery (APP failover scenario)")
+	} else {
+		err = handleIscsiDiscoveryForBackend(primaryVolObj, true)
+		if err != nil {
+			return err
+		}
 	}
+
 	secondaryBackends := util.GetSecondaryBackends(volume.SecondaryArrayDetails)
 
 	for _, secondaryLunInfo := range secondaryBackends {
@@ -258,6 +267,10 @@ func HandleIscsiDiscovery(volume *model.Volume) (err error) {
 		secondaryVolObj.SerialNumber = volume.SerialNumber
 
 		err = handleIscsiDiscoveryForBackend(secondaryVolObj, true)
+		if err != nil {
+			log.Errorf("secondary backend discovery failed for targets %v: %s", secondaryVolObj.TargetNames(), err.Error())
+			return err
+		}
 	}
 	return nil
 }
@@ -1001,6 +1014,17 @@ func iscsiDeleteNode(target *model.IscsiTarget) (err error) {
 	}
 
 	return nil
+}
+
+// filterEmptyTargets returns a new slice with empty-string entries removed.
+func filterEmptyTargets(targets []string) []string {
+	var out []string
+	for _, t := range targets {
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func getIscsiHosts() ([]string, error) {
